@@ -20,9 +20,12 @@
 #include "kernel.h"
 #include <circle/string.h>
 #include <circle/debug.h>
+#include <circle/util.h>
 #include <assert.h>
+#include <circle/startup.h>
 
 static const char FromKernel[] = "kernel";
+static CDevice *pTarget = 0;
 
 CKernel::CKernel (void)
 :	m_Memory (TRUE),
@@ -52,7 +55,7 @@ boolean CKernel::Initialize (void)
 	
 	if (bOK)
 	{
-		CDevice *pTarget = m_DeviceNameService.GetDevice (m_Options.GetLogDevice (), FALSE);
+		pTarget = m_DeviceNameService.GetDevice (m_Options.GetLogDevice (), FALSE);
 		if (pTarget == 0)
 		{
 			pTarget = &m_Screen;
@@ -66,8 +69,11 @@ boolean CKernel::Initialize (void)
 
 TShutdownMode CKernel::Run (void)
 {
-	m_Logger.Write (FromKernel, LogNotice, "Compile time: " __DATE__ " " __TIME__);
+    char buf[128] = {0};
+    char* buf_wp = buf;
+    char* buf_ep = buf + 127;
 
+	m_Logger.Write (FromKernel, LogNotice, "Compile time: " __DATE__ " " __TIME__);
 	// show the character set on screen
 	for (char chChar = ' '; chChar <= '~'; chChar++)
 	{
@@ -82,6 +88,28 @@ TShutdownMode CKernel::Run (void)
 		m_Screen.Write ((const char *) Message, Message.GetLength ());
 	}
 	m_Screen.Write ("\n", 1);
+
+    while(1){
+        if(pTarget->Read(buf_wp, 1) <= 0)
+            continue;
+        
+        if((buf_wp + 1) > buf_ep){
+            m_Logger.Write(FromKernel, LogError, "command is too long! max_len(cmd) = 127");
+            halt();
+        }
+        if(*buf_wp == '\n' || *buf_wp == '\r'){
+            *buf_wp = '\n';
+            *(++buf_wp) = 0;
+            m_Logger.Write(FromKernel, LogNotice, "Command:%s", buf);
+
+            if(strcmp(buf, "reboot\n") == 0){
+                reboot();
+            }   
+            buf_wp = buf;
+        }else{
+            buf_wp++;
+        }
+    }
 
 #ifndef NDEBUG
 	// some debugging features

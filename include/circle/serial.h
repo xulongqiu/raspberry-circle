@@ -25,6 +25,9 @@
 #include <circle/spinlock.h>
 #include <circle/sysconfig.h>
 #include <circle/types.h>
+#include <circle/interrupt.h>
+
+#define SERIAL_REV_BUF_LEN 12
 
 class CSerialDevice : public CDevice
 {
@@ -35,10 +38,12 @@ public:
 	boolean Initialize (unsigned nBaudrate = 115200);
 
 	int Write (const void *pBuffer, unsigned nCount);
+	int Read (void *pBuffer, unsigned nCount);
 
 #ifndef USE_RPI_STUB_AT
 private:
 	void Write (u8 nChar);
+    static void InterruptRev(void* param);
 
 private:
 #if RASPPI >= 2
@@ -47,8 +52,15 @@ private:
 #endif
 	CGPIOPin m_TxDPin;
 	CGPIOPin m_RxDPin;
+	CInterruptSystem	m_Interrupt;
+    bool m_bIRQConnected;
 
 	CSpinLock m_SpinLock;
+    static char m_RevBuf[SERIAL_REV_BUF_LEN];
+    static char* m_RevWp;
+    static char* m_RevRp;
+    static unsigned short m_RevSize;
+	static CSpinLock m_RevSpinLock;
 #endif
 };
 

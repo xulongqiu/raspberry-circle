@@ -87,3 +87,7 @@ Config.mk
 doc/html/
 test/
 tmp/
+
+
+cscope*
+tags
