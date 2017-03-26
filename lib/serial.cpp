@@ -30,6 +30,8 @@
 #include <circle/sysconfig.h>
 #include <assert.h>
 
+#define SERIAL_IRQ ARM_IRQ_UART
+
 #ifndef USE_RPI_STUB_AT
 
 #define DR_OE_MASK		(1 << 11)
@@ -81,6 +83,12 @@
 #define INT_DCDM		(1 << 2)
 #define INT_CTSM		(1 << 1)
 
+char CSerialDevice::m_RevBuf[SERIAL_REV_BUF_LEN] = {0};
+char* CSerialDevice::m_RevWp = CSerialDevice::m_RevBuf;
+char* CSerialDevice::m_RevRp = CSerialDevice::m_RevBuf;
+unsigned short CSerialDevice::m_RevSize = 0;
+CSpinLock CSerialDevice::m_RevSpinLock;
+
 CSerialDevice::CSerialDevice (void)
 :
 #if RASPPI >= 2
@@ -89,7 +97,8 @@ CSerialDevice::CSerialDevice (void)
 	m_GPIO33 (33, GPIOModeInput),
 #endif
 	m_TxDPin (14, GPIOModeAlternateFunction0),
-	m_RxDPin (15, GPIOModeAlternateFunction0)
+	m_RxDPin (15, GPIOModeAlternateFunction0),
+    m_bIRQConnected(FALSE)
 #ifdef REALTIME
 	, m_SpinLock (FALSE)
 #endif
@@ -102,6 +111,10 @@ CSerialDevice::~CSerialDevice (void)
 	write32 (ARM_UART0_IMSC, 0);
 	write32 (ARM_UART0_CR, 0);
 	PeripheralExit ();
+    assert(m_bIRQConnected);
+    CInterruptSystem::DisableIRQ(SERIAL_IRQ);
+    m_Interrupt.DisconnectIRQ(SERIAL_IRQ);
+    m_bIRQConnected = FALSE;
 }
 
 boolean CSerialDevice::Initialize (unsigned nBaudrate)
@@ -119,13 +132,18 @@ boolean CSerialDevice::Initialize (unsigned nBaudrate)
 
 	PeripheralEntry ();
 
-	write32 (ARM_UART0_IMSC, 0);
+    write32 (ARM_UART0_IMSC, INT_RT|INT_RX);
 	write32 (ARM_UART0_ICR,  0x7FF);
 	write32 (ARM_UART0_IBRD, nIntDiv);
 	write32 (ARM_UART0_FBRD, nFractDiv);
 	write32 (ARM_UART0_LCRH, LCRH_WLEN8_MASK);	// 8N1
 	write32 (ARM_UART0_IFLS, 0);
 	write32 (ARM_UART0_CR,   CR_UART_EN_MASK | CR_TXE_MASK | CR_RXE_MASK);
+    assert(!m_bIRQConnected);
+    m_Interrupt.Initialize();
+    m_Interrupt.ConnectIRQ(SERIAL_IRQ, InterruptRev, (void*)this);
+    CInterruptSystem::EnableIRQ(SERIAL_IRQ);
+    m_bIRQConnected = TRUE;
 
 	PeripheralExit ();
 
@@ -172,6 +190,64 @@ void CSerialDevice::Write (u8 nChar)
 	}
 		
 	write32 (ARM_UART0_DR, nChar);
+}
+
+int CSerialDevice::Read (void* pBuffer, unsigned nCount)
+{
+    int i = 0;
+    char* revEnd = m_RevBuf + SERIAL_REV_BUF_LEN -1;
+    u8 *pRev = (u8*)pBuffer;
+    
+    assert(pRev != 0);
+
+	m_RevSpinLock.Acquire ();
+
+    if(m_RevSize == 0)
+    {
+	    m_SpinLock.Release ();
+        return 0;
+    }
+
+    while(m_RevSize > 0 && i < nCount)
+    {
+        *pRev = *m_RevRp++;
+        if(m_RevRp > revEnd)
+            m_RevRp = m_RevBuf;
+        i++;
+        m_RevSize--;
+    }
+    
+	m_RevSpinLock.Release ();
+
+    return i;
+}
+
+void CSerialDevice::InterruptRev(void* param)
+{
+    char* revEnd = m_RevBuf + SERIAL_REV_BUF_LEN -1;
+    
+	m_RevSpinLock.Acquire ();
+    
+    assert(m_RevSize < SERIAL_REV_BUF_LEN);
+
+    if((read32(ARM_UART0_MIS) & INT_RT) ||(read32(ARM_UART0_MIS) & INT_RX) )
+    {
+        *m_RevWp = (char)read32(ARM_UART0_DR);
+        m_RevSize++;
+	    while (read32 (ARM_UART0_FR) & FR_TXFF_MASK)
+	    {
+	    	// do nothing
+    	}
+		
+	    write32 (ARM_UART0_DR, *m_RevWp);
+       
+        if((++m_RevWp) > revEnd)
+        {
+            m_RevWp = m_RevBuf;
+        }
+    }
+
+	m_RevSpinLock.Release ();
 }
 
 #else
